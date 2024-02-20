@@ -333,7 +333,7 @@ logloss_sp6m = log_loss(eval_data_sp6m['actual_binary_outcome'], eval_data_sp6m[
 
 # Print the evaluation metrics
 (brier_score_sp6m, roc_auc_sp6m, logloss_sp6m)
-
+#(0.30298877039810873, 0.6980581576893052, 0.8002290079689729)
 '''
 
 1.  **Brier Score**: This score ranges from 0 to 1, where 0 represents a perfect model and 1 represents the worst model.  A Brier score of 0.3030 indicates that, on average, the squared difference between the predicted probabilities and the actual outcomes is moderately high.  This suggests that the probabilities are not as close to the true outcomes as they could be, indicating room for improvement in the model.
@@ -361,6 +361,7 @@ logloss_sp12m = log_loss(eval_data_sp12m['actual_binary_outcome'], eval_data_sp1
 
 # Print the evaluation metrics
 (brier_score_sp12m, roc_auc_sp12m, logloss_sp12m)
+# (0.30458583771273107, 0.716120218579235, 0.8034942614886871)
 
 ##（6）判断大幅涨跌预测的是否准确
 #大幅度也类似正return负return这个问题，去做判断。
@@ -559,12 +560,14 @@ merged_data_sp6m
 
 merged_data_sp12m
 
+
 #（3）然后搞reversals
 #reversals就是价格的反转。
 #可能也要用时间序列做？
 
 
 #%%解决第三问，如何基于已知信息做策略。这个和第四问一起做。
+
 #思路一：我有了方差，我去找相关资产把波动对冲到零
 
 
