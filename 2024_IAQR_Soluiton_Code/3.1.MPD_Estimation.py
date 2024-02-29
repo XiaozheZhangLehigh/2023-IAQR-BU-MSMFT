@@ -1,10 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Feb 17 14:37:49 2024
 
-@author: apple
-"""
 #%% import repertories
 import pandas as pd
 import numpy as np
@@ -16,9 +10,16 @@ from datetime import datetime, timedelta
 import scipy.stats as stats
 from sklearn.metrics import brier_score_loss, roc_curve, auc, log_loss
 from sklearn.preprocessing import StandardScaler
+from statsmodels.tsa.stattools import adfuller
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+import statsmodels.api as sm
+from sklearn.preprocessing import PolynomialFeatures
+
 #%%1. DataCleaning
 # read "mpd_stats.csv" with relative path
-mpd_stats = pd.read_csv("/Users/apple/Downloads/科科/2023-IAQR-BU-MSMFT/data/mpd_stats.csv", skiprows=2, header = 1)
+mpd_stats = pd.read_csv("Input_Data/mpd_stats.csv", skiprows=2, header = 1)
 # convert the "Date" column to datetime
 mpd_stats["idt"] = pd.to_datetime(mpd_stats["idt"])
 #rename the idt column to Date
@@ -59,7 +60,7 @@ print(start_end_dates)
 #Upsampling for weekly data by forward filling, as majority of the market data frequency are in weekly basis
 mpd_stats_filtered_complete.set_index('Date', inplace=True)
 
-#2014-09-04之前的数据都是两周一次，然后用前向填充把缺失的数据填充上，填充后的数据是每周一次。
+# fill data
 def resample_and_fill(group):
     # Define the cutoff date
     cutoff_date = '2014-09-04'
@@ -87,8 +88,6 @@ mpd_stats_weekly.isnull().sum()
 mpd_stats_weekly.fillna(method='ffill', inplace=True)
 mpd_stats_weekly.isnull().sum()
 
-# export the cleaned data to a csv file
-mpd_stats_weekly.to_csv('/Users/apple/Downloads/科科/2023-IAQR-BU-MSMFT/data/mpd_stats_cleaned.csv', index=True)
 
 
 #%%2.Feature Engineering
@@ -142,22 +141,19 @@ for market in mpd_stats_weekly['market'].unique():
     df_feature_engineered = df_feature_engineered.merge(market_data, on='Date', how='left')
 
 # This ensures that the 'market' column is not included in the final DataFrame
-# df_feature_engineered就是把时间对齐了，然后列是不同资产的不同特征的值。
 
 # find nan values or missing values
 nan_rows = df_feature_engineered.isnull().sum()
-#这个里面的缺失值应该是因为时间没有对齐。4，6，7，9，14
 
 # Interpolate missing values linearly without using future data
 df_feature_engineered['Date'] = pd.to_datetime(df_feature_engineered['Date'])
 df_feature_engineered.set_index('Date', inplace=True)
 df_feature_engineered.interpolate(method='time', inplace=True)
 
-#这个cell可以不用，我们就接着cell（1）的mpd_stats_cleaned.csv做就可以。
+##################################################################################################################################################################
 
-#%%3.解决第一问，estimator是否有用
-##（1）导入标普500的数据，并计算真实的return
-sp500_data_path = '/Users/apple/Downloads/科科/2023-IAQR-BU-MSMFT/data/^SPX.csv'
+# solve quesiton 1 if the estimators are useful
+sp500_data_path = 'Input_Data/^SPX.csv'
 sp500_data = pd.read_csv(sp500_data_path)
 
 # Convert the 'Date' column to datetime format
@@ -175,55 +171,78 @@ sp500_filtered_data = sp500_filtered_data.sort_values('Date')
 # Calculate the 6-month return. The shift will be based on trading days (~126 trading days in 6 months)
 sp500_filtered_data['6m_return'] = sp500_filtered_data['Adj Close'].pct_change(periods=126).shift(-126)
 
-#计算真实的return然后保存到一个数据框里
 sp500_return = sp500_filtered_data[['Date', '6m_return']].dropna()
 
 sp500_return['log_6m_return'] = np.log(1+sp500_return['6m_return'])
 
-##（2）然后取出来sp6m和sp12m，因为methodology文件说已经全都整理成6个月后的预测了
 mpd_stats_weekly.info
 mpd_stats_weekly.isnull().sum()
-#mpd_stats_weekly已经是一个整理好的没有缺失值的数据
+
 # Filter the DataFrame for market 'sp6m'
 df_sp6m = mpd_stats_weekly[mpd_stats_weekly['market'] == 'sp6m']
 
 # Filter the DataFrame for market 'sp12m'
 df_sp12m = mpd_stats_weekly[mpd_stats_weekly['market'] == 'sp12m']
 
-##（3）比较真实的return和预测的均值
-#根据df_sp6m中的日期，取出对应的真实return
+## (3) compared the real return and the predicted mean
+
 # Merge to find matching dates and get the corresponding returns
 merged_data_sp6m = pd.merge(df_sp6m, sp500_return, on='Date', how='left')
-#根据df_sp12m中的日期，取出对应的真实return
+
+# Merge to find matching dates and get the corresponding returns
 merged_data_sp12m = pd.merge(df_sp12m, sp500_return, on='Date', how='left')
 
 # Check if the 'Date' columns in both dataframes are exactly the same
 dates_match = merged_data_sp6m['Date'].equals(merged_data_sp12m['Date'])
 dates_match
 
-# Renaming 'mu' columns to 'mu_sp6m' and 'mu_sp12m' respectively
-sp_y = pd.merge(merged_data_sp6m[['Date', 'mu', 'p50', '6m_return']], merged_data_sp12m[['Date', 'mu','p50',]], on='Date', suffixes=('_sp6m', '_sp12m'))
+# Renaming 'mu' columns to 'mu_sp6m' and 'mu_sp12m' respectively and merging.
+sp_y = pd.merge(
+    merged_data_sp6m[['Date', 'p50', 'p10', 'p90', '6m_return']],
+    merged_data_sp12m[['Date', 'p50', 'p10', 'p90']],
+    on='Date',
+    suffixes=('_sp6m', '_sp12m')
+)
 
-sp_y.dropna()
+# Drop any rows with NaN values to clean up the data.
+sp_y.dropna(inplace=True)
 
-# Plot all the columns in sp_y dataframe
+# Plot all the selected columns in the sp_y dataframe.
 plt.figure(figsize=(14, 7))
 
-# Plotting each of the series in the dataframe
-plt.plot(sp_y['Date'], sp_y['mu_sp6m'], label='mu_sp6m', color='blue')
-plt.plot(sp_y['Date'], sp_y['p50_sp6m'], label='p50_sp6m', color='orange')
-plt.plot(sp_y['Date'], sp_y['6m_return'], label='6m_return', color='green')
-plt.plot(sp_y['Date'], sp_y['mu_sp12m'], label='mu_sp12m', color='red')
-plt.plot(sp_y['Date'], sp_y['p50_sp12m'], label='p50_sp12m', color='purple')
+# Plotting the median (p50) as solid lines.
+plt.plot(sp_y['Date'], sp_y['p50_sp6m'], label='Median 6m', color='Teal', linewidth=2)
+plt.plot(sp_y['Date'], sp_y['p50_sp12m'], label='Median 12m', color='DarkOrange', linewidth=2)
 
-plt.title('S&P 500 Predicted vs Actual Returns Over Time')
+# Plotting the actual return (6m_return) as a solid line.
+plt.plot(sp_y['Date'], sp_y['6m_return'], label='Actual 6m Return', color='CornflowerBlue', linewidth=2)
+
+# Plotting the 10th and 90th percentiles (p10, p90) as dashed lines.
+plt.plot(sp_y['Date'], sp_y['p10_sp6m'], label='10th Percentile 6m', color='slategray', linestyle='--')
+plt.plot(sp_y['Date'], sp_y['p90_sp6m'], label='90th Percentile 6m', color='slategray', linestyle='--')
+
+# Filling the area between the 10th and 90th percentiles with a shaded region.
+plt.fill_between(sp_y['Date'], sp_y['p10_sp6m'], sp_y['p90_sp6m'], color='slategray', alpha=0.1)
+
+# Optionally, do the same for the 12-month predictions, if needed.
+# plt.plot(sp_y['Date'], sp_y['p10_sp12m'], label='10th Percentile 12m', color='peachpuff', linestyle='--')
+# plt.plot(sp_y['Date'], sp_y['p90_sp12m'], label='90th Percentile 12m', color='peachpuff', linestyle='--')
+# plt.fill_between(sp_y['Date'], sp_y['p10_sp12m'], sp_y['p90_sp12m'], color='peachpuff', alpha=0.3)
+
+# Setting the title and labels.
+plt.title('S&P 500 Median Predicted vs Actual Returns Over Time')
 plt.xlabel('Date')
 plt.ylabel('Values')
-plt.legend()
+
+# Adding the legend outside the plot to not obscure data.
+# Adding the legend outside the plot to not obscure data.
+plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
+plt.tight_layout()
 plt.show()
 
 
-##（4）通过置信区间比较差距
+
+## (4) compare the difference through the confidence interval
 # create a function to calculate the accuracy of the predictions
 def calculate_prediction_accuracy(df, actual_col, p10_col, p50_col, p90_col):
     # Count how many times the actual log return falls within the p10 and p90 interval
@@ -276,14 +295,13 @@ accuracy_results_sp12m
  'total_points': 578}
 '''
 
-#这是个80%的置信区间，在这个范围里的数据有86%以上可以认为预测的比较成功了。然后相对来说，sp12的预测更加准确一些。
-
-##（5）看一下能不能通过方向性来预测是否准确
-#先把真实数据的涨跌取出来
+## (5) check the accuracy of the direction of the prediction
+# Create a new column to store the sign of the 6-month log return
 # Convert the 'log_6m_return' column to +1 if positive, -1 if negative
 sp500_return['log_6m_return_sign'] = sp500_return['log_6m_return'].apply(lambda x: 1 if x > 0 else -1)
 sp500_return
-#然后把预测的涨跌也算出来
+
+# Calculate the probability of a positive return
 # Function to calculate z-score adjusted for skewness and kurtosis using Cornish-Fisher expansion
 def z_score_cf_expansion(q, skew, kurt):
     # z is the z-score for the standard normal distribution
@@ -312,7 +330,8 @@ merged_data_sp12m['adj_prob_positive_return'] = 1 - stats.norm.cdf(merged_data_s
 # Display the new DataFrame with the calculated adjusted probabilities
 merged_data_sp12m[['Date', 'mu', 'sd', 'skew', 'kurt', 'adj_prob_positive_return']]
 
-#通过brier_score, roc_auc, logloss来判断方向性预测的准确与否
+
+# Calculate the Brier score, ROC AUC, and Log Loss for the 6-month predictions
 
 # Convert actual sign of return to binary (1 for positive, 0 for non-positive)
 sp500_return['actual_binary_outcome'] = sp500_return['log_6m_return_sign'].apply(lambda x: 1 if x == 1 else 0)
@@ -334,6 +353,7 @@ logloss_sp6m = log_loss(eval_data_sp6m['actual_binary_outcome'], eval_data_sp6m[
 # Print the evaluation metrics
 (brier_score_sp6m, roc_auc_sp6m, logloss_sp6m)
 #(0.30298877039810873, 0.6980581576893052, 0.8002290079689729)
+
 '''
 
 1.  **Brier Score**: This score ranges from 0 to 1, where 0 represents a perfect model and 1 represents the worst model.  A Brier score of 0.3030 indicates that, on average, the squared difference between the predicted probabilities and the actual outcomes is moderately high.  This suggests that the probabilities are not as close to the true outcomes as they could be, indicating room for improvement in the model.
@@ -363,23 +383,23 @@ logloss_sp12m = log_loss(eval_data_sp12m['actual_binary_outcome'], eval_data_sp1
 (brier_score_sp12m, roc_auc_sp12m, logloss_sp12m)
 # (0.30458583771273107, 0.716120218579235, 0.8034942614886871)
 
-##（6）判断大幅涨跌预测的是否准确
-#大幅度也类似正return负return这个问题，去做判断。
-#就是说我先去算，真实的产生大幅度增减的数据有多少，有就是1，没有就是0。
-# 定义大幅变化的阈值为20%
+## (6) Assessing the accuracy of significant rise and fall predictions
+# The issue of significant rises and falls is similar to that of positive and negative returns.
+# The first step is to calculate how many instances of significant increases or decreases actually occurred, marking them as 1 if they did, and 0 if they did not.
+# Define the threshold for significant change as 20%
 large_change_threshold = 0.20
 
-# 计算大幅上涨和下跌
+# calculate large increase and large decrease
 sp500_return['large_increase'] = sp500_return['log_6m_return'].apply(lambda x: 1 if x >= large_change_threshold else 0)
 sp500_return['large_decrease'] = sp500_return['log_6m_return'].apply(lambda x: 1 if x <= -large_change_threshold else 0)
 
-# 输出结果查看
+# print result
 print(sp500_return.head())
 sp500_return.describe()
 
-#然后我已经有那个涨跌的预测了，我再去和这个涨跌的预测去比较。也是用brier_score, roc_auc, logloss来判断预测的准确性。
-#我应该有四组数据：6m涨，6m跌；12m涨，12m跌
-#6m涨
+# Then I already have the prediction for the rise and fall, and I will compare it with this prediction of rise and fall. The accuracy is also judged using brier_score, roc_auc, logloss.
+# I should have four sets of data: 6m rise, 6m fall; 12m rise, 12m fall
+#6m increase 
 eval_data_sp6m = pd.merge(merged_data_sp6m, sp500_return, on='Date')
 # Calculate Brier score
 brier_score_sp6m_in = brier_score_loss(eval_data_sp6m['large_increase'], eval_data_sp6m['prInc'])
@@ -395,7 +415,7 @@ logloss_sp6m_in = log_loss(eval_data_sp6m['large_increase'], eval_data_sp6m['prI
 (brier_score_sp6m_in, roc_auc_sp6m_in, logloss_sp6m_in)
 #(0.012429016340377705, 0.9888475836431226, 0.05116827792489753)
 
-#6m跌
+#6m decrease
 # Calculate Brier score
 brier_score_sp6m_de = brier_score_loss(eval_data_sp6m['large_decrease'], eval_data_sp6m['prDec'])
 
@@ -410,7 +430,7 @@ logloss_sp6m_de = log_loss(eval_data_sp6m['large_decrease'], eval_data_sp6m['prD
 (brier_score_sp6m_de, roc_auc_sp6m_de, logloss_sp6m_de)
 #(0.013842216166729912, 0.6867158671586716, 0.09762668168530149)
 
-#12m涨
+#12m increase
 eval_data_sp12m = pd.merge(merged_data_sp12m, sp500_return, on='Date')
 # Calculate Brier score
 brier_score_sp12m_in = brier_score_loss(eval_data_sp12m['large_increase'], eval_data_sp12m['prInc'])
@@ -426,7 +446,7 @@ logloss_sp12m_in = log_loss(eval_data_sp12m['large_increase'], eval_data_sp12m['
 (brier_score_sp12m_in, roc_auc_sp12m_in, logloss_sp12m_in)
 #(0.019231624611220105, 0.9560099132589839, 0.11040701467531214)
 
-#12m跌
+#12m decrease
 # Calculate Brier score
 brier_score_sp12m_de = brier_score_loss(eval_data_sp12m['large_decrease'], eval_data_sp12m['prDec'])
 
@@ -440,160 +460,64 @@ logloss_sp12m_de = log_loss(eval_data_sp12m['large_decrease'], eval_data_sp12m['
 # Print the evaluation metrics
 (brier_score_sp12m_de, roc_auc_sp12m_de, logloss_sp12m_de)
 #(0.023975969887039705, 0.6841328413284133, 0.1547707960291045)
-#预测的上升很准，下降就不如上升准。
+# The predictions for increase are accurate, but not as accurate for decrease.
 
+# Calculate ROC curves and AUCs for all cases
+fpr_sp6m_in, tpr_sp6m_in, _ = roc_curve(eval_data_sp6m['large_increase'], eval_data_sp6m['prInc'])
+roc_auc_sp6m_in = auc(fpr_sp6m_in, tpr_sp6m_in)
 
+fpr_sp6m_de, tpr_sp6m_de, _ = roc_curve(eval_data_sp6m['large_decrease'], eval_data_sp6m['prDec'])
+roc_auc_sp6m_de = auc(fpr_sp6m_de, tpr_sp6m_de)
 
-#%%4.解决第二问，to predict future returns, volatilities, reversals。
-#（1）predict future returns是不是可以用时间序列做？
+fpr_sp12m_in, tpr_sp12m_in, _ = roc_curve(eval_data_sp12m['large_increase'], eval_data_sp12m['prInc'])
+roc_auc_sp12m_in = auc(fpr_sp12m_in, tpr_sp12m_in)
 
+fpr_sp12m_de, tpr_sp12m_de, _ = roc_curve(eval_data_sp12m['large_decrease'], eval_data_sp12m['prDec'])
+roc_auc_sp12m_de = auc(fpr_sp12m_de, tpr_sp12m_de)
 
+# Create subplots
+fig, axs = plt.subplots(2, 2, figsize=(10, 10))
 
+# 6m increase
+axs[0, 0].plot(fpr_sp6m_in, tpr_sp6m_in, color='blue', label=f'ROC curve (area = {roc_auc_sp6m_in:.2f})')
+axs[0, 0].plot([0, 1], [0, 1], color='navy', linestyle='--')
+axs[0, 0].set_xlim([0.0, 1.0])
+axs[0, 0].set_ylim([0.0, 1.05])
+axs[0, 0].set_xlabel('False Positive Rate')
+axs[0, 0].set_ylabel('True Positive Rate')
+axs[0, 0].set_title('6m Increase ROC')
+axs[0, 0].legend(loc="lower right")
 
+# 6m decrease
+axs[0, 1].plot(fpr_sp6m_de, tpr_sp6m_de, color='blue', label=f'ROC curve (area = {roc_auc_sp6m_de:.2f})')
+axs[0, 1].plot([0, 1], [0, 1], color='navy', linestyle='--')
+axs[0, 1].set_xlim([0.0, 1.0])
+axs[0, 1].set_ylim([0.0, 1.05])
+axs[0, 1].set_xlabel('False Positive Rate')
+axs[0, 1].set_ylabel('True Positive Rate')
+axs[0, 1].set_title('6m Decrease ROC')
+axs[0, 1].legend(loc="lower right")
 
-#（2）搞volatilities
-'''
-要计算每天的真实波动率，你需要首先决定你想度量的波动率的时间范围。
-通常，波动率是通过计算一定时间窗口内的收益率变动来估计的。
-对于每日波动率的计算，可以选择一个固定的时间窗口（比如过去5天、10天或20天）
-来计算这个窗口内的日收益率的标准差。这种方法通常被称为滚动波动率计算。
-我先选择5天为窗口。
-'''
-#那我就是要先滚动的把真实的波动性算出来
+# 12m increase
+axs[1, 0].plot(fpr_sp12m_in, tpr_sp12m_in, color='green', label=f'ROC curve (area = {roc_auc_sp12m_in:.2f})')
+axs[1, 0].plot([0, 1], [0, 1], color='darkgreen', linestyle='--')
+axs[1, 0].set_xlim([0.0, 1.0])
+axs[1, 0].set_ylim([0.0, 1.05])
+axs[1, 0].set_xlabel('False Positive Rate')
+axs[1, 0].set_ylabel('True Positive Rate')
+axs[1, 0].set_title('12m Increase ROC')
+axs[1, 0].legend(loc="lower right")
 
-# 计算窗口期为5天的对数回报率的标准差，即波动率
-# 使用rolling()函数来创建一个滑动窗口，然后使用std()函数计算每个窗口期的标准差
-sp500_return['5d_rolling_volatility'] = sp500_return['log_6m_return'].rolling(window=5).std()
+#12m decrease
+axs[1, 1].plot(fpr_sp12m_de, tpr_sp12m_de, color='green', label=f'ROC curve (area = {roc_auc_sp12m_de:.2f})')
+axs[1, 1].plot([0, 1], [0, 1], color='darkgreen', linestyle='--')
+axs[1, 1].set_xlim([0.0, 1.0])
+axs[1, 1].set_ylim([0.0, 1.05])
+axs[1, 1].set_xlabel('False Positive Rate')
+axs[1, 1].set_ylabel('True Positive Rate')
+axs[1, 1].set_title('12m Decrease ROC')
+axs[1, 1].legend(loc="lower right")
 
-# 查看结果
-print(sp500_return[['Date', 'log_6m_return', '5d_rolling_volatility']])
-sp500_return.dropna()
-
-
-#然后去和预测的标准差比
-data = pd.merge(sp500_return, merged_data_sp6m[['Date', 'sd']], on='Date', how='left', suffixes=('', '_sp6m'))
-data = pd.merge(data, merged_data_sp12m[['Date', 'sd']], on='Date', how='left', suffixes=('', '_sp12m'))
-data.dropna(inplace=True)
-
-# 绘制时序图
-plt.figure(figsize=(12, 6))
-
-# 真实的5天滚动波动率
-plt.plot(data['Date'], data['5d_rolling_volatility'], label='Real 5-Day Rolling Volatility', color='blue')
-
-# 预测的波动率 - sp6m
-plt.plot(data['Date'], data['sd'], label='Predicted Volatility (6m)', color='green')
-
-# 预测的波动率 - sp12m
-plt.plot(data['Date'], data['sd_sp12m'], label='Predicted Volatility (12m)', color='red')
-
-plt.title('S&P 500 Real vs Predicted Volatility')
-plt.xlabel('Date')
-plt.ylabel('Volatility')
-plt.legend()
+#Adjust layout
+plt.tight_layout()
 plt.show()
-
-#中心化之后再画一个图，看看是不是像的
-# 计算需要中心化的列的均值
-mean_5d_rolling_volatility = data['5d_rolling_volatility'].mean()
-mean_sd = data['sd'].mean()
-mean_sd_sp12m = data['sd_sp12m'].mean()
-
-# 从每个列中减去其均值进行中心化
-data['5d_rolling_volatility_centered'] = data['5d_rolling_volatility'] - mean_5d_rolling_volatility
-data['sd_centered'] = data['sd'] - mean_sd
-data['sd_sp12m_centered'] = data['sd_sp12m'] - mean_sd_sp12m
-
-
-# 绘制时序图
-plt.figure(figsize=(12, 6))
-
-# 真实的5天滚动波动率
-plt.plot(data['Date'], data['5d_rolling_volatility_centered'], label='Real 5-Day Rolling Volatility_centered', color='blue')
-
-# 预测的波动率 - sp6m
-plt.plot(data['Date'], data['sd_centered'], label='Predicted Volatility (6m)_centered', color='green')
-
-# 预测的波动率 - sp12m
-plt.plot(data['Date'], data['sd_sp12m_centered'], label='Predicted Volatility (12m)_centered', color='red')
-
-plt.title('S&P 500 Real vs Predicted Volatility')
-plt.xlabel('Date')
-plt.ylabel('Volatility')
-plt.legend()
-plt.show()
-
-#这两个预测是非常像的，预测出的走势基本类似。但是对于真实的波动的预测，感觉它只能预测出什么时候会发生较大的波动。
-
-#标准之后再画一个图，看看是不是像的
-# 创建一个StandardScaler对象
-scaler = StandardScaler()
-
-# 选择需要标准化的列
-columns_to_scale = ['5d_rolling_volatility', 'sd', 'sd_sp12m']
-
-# 对选定的列进行标准化
-data[columns_to_scale] = scaler.fit_transform(data[columns_to_scale])
-
-# 绘制时序图
-plt.figure(figsize=(12, 6))
-
-# 真实的5天滚动波动率
-plt.plot(data['Date'], data['5d_rolling_volatility'], label='Real 5-Day Rolling Volatility', color='blue')
-
-# 预测的波动率 - sp6m
-plt.plot(data['Date'], data['sd'], label='Predicted Volatility (6m)', color='green')
-
-# 预测的波动率 - sp12m
-plt.plot(data['Date'], data['sd_sp12m'], label='Predicted Volatility (12m)', color='red')
-
-plt.title('S&P 500 Real vs Predicted Volatility')
-plt.xlabel('Date')
-plt.ylabel('Volatility')
-plt.legend()
-plt.show()
-
-#标准化之后的数据趋势相似性很明显。可以认为是一个对波动比较好的预测。
-
-#还有一种就是用预测出的mean和volatilities建模garch，再去跟真实的比一下。
-merged_data_sp6m
-
-merged_data_sp12m
-
-
-#（3）然后搞reversals
-#reversals就是价格的反转。
-#可能也要用时间序列做？
-
-
-#%%解决第三问，如何基于已知信息做策略。这个和第四问一起做。
-
-#思路一：我有了方差，我去找相关资产把波动对冲到零
-
-
-#思路二：我能够预测reversals，然后知道价格立即下跌时提前抛售，知道价格立即上升时多多买入。
-
-#这个策略运行之后最好要去回测一下。
-#怎么回测也要想一下。回测出结果要做一张大图。属于很关键的信息。
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
